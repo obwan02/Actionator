@@ -2,7 +2,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from starlette.staticfiles import StaticFiles
 
-from .lib import Actionator
+from actionator.core import Actionator
  
 import os
 
