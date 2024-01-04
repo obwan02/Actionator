@@ -8,12 +8,9 @@ var config = {
             componentName: 'action-bar',
             isClosable: false,
         },{
-            type: 'column',
-            content:[{
-                type: 'component',
-                componentName: 'output',
-                componentState: { func_name: null }
-            }]
+            type: 'stack',
+            componentName: 'output-holder',
+            content:[]
         }]
     }]
 };
@@ -21,11 +18,20 @@ var config = {
 var layout = new GoldenLayout(config);
 
 layout.registerComponent('action-bar', function(container, state) {
-    fetch("/static/gen/action_bar.html").then(x => x.text()).then(x => container.getElement().html(x));
+    fetch("/parts/action_bar").then(x => x.text()).then(x => container.getElement().html(x));
 });
 
-layout.registerComponent('output', function(container, state) {
-    container.getElement().html("<code>TODO</code>");
-});
+layout.registerComponent('start-form', function(container, state) {
+    fetch(state.action_form_path).then(x => x.text()).then(x => container.getElement().html(x));
+})
 
 layout.init();
+
+function start_action(name, action_form_path) {
+    layout.root.contentItems[0].contentItems[1].addChild({
+        title: `Start ${name.title}`,
+        type: 'component',
+        componentName: 'start-form',
+        componentState: { action_form_path }
+    });
+}
