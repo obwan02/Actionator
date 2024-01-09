@@ -5,9 +5,7 @@ from starlette.routing import Route
 from starlette import responses
 from pathlib import Path
 from typing import Iterable
-from dataclasses import dataclass
 import typing
-import pydantic
 import inspect
 
 class RegisteredFunc:
@@ -35,8 +33,20 @@ class RegisteredFunc:
             del arg_types['return']
 
         return arg_types
-        
     
+    
+def call_registered_func(func: RegisteredFunc, request: Request):
+    sig = inspect.signature(func)
+    if len(sig.parameters) != len(func.fn_arg_types):
+        raise NotImplementedError("Untyped function parameters are not currently supported ...")
+
+    if len(func.fn_arg_types) == 0:
+        return {}
+    if len(func.fn_arg_types) == 1:
+        key, value = next(func.fn_arg_types.items())
+        func(key=value)
+        
+
 
 class Actionator:
     def __init__(self, api_prefix="/api/v1"):
@@ -48,7 +58,10 @@ class Actionator:
         A decorator to register a function. This does a couple of things.
         Firstly, it makes the function accessible through RPC when API is generated.
         Secondly, when a frontend is generated (if a frontend is generated), it will create
-        an item
+        an item.
+
+        Args:
+            func: The function that is being registered
         """
         self.registered_funcs.append(RegisteredFunc(func, self))
         return func
@@ -56,22 +69,13 @@ class Actionator:
     def _js_create_api_endpoints(self) -> Iterable[Route]:
         routes = []
         for func in self.registered_funcs:
-            arg_types = typing.get_type_hints(func.func)
-
-            if ("return" in arg_types and len(arg_types) != 2) or (
-                "return" not in arg_types and len(arg_types) != 1
-            ):
-                raise TypeError(
-                    f"Function {func.func.__module__}.{func.name} doesn't have exactly 1 parameters (typing hints: {arg_types}"
-                )
-
-            arg_type = next(typ for key, typ in arg_types.items() if key != "return")
-            adapter = pydantic.TypeAdapter(arg_type)
+            
+            args_types = func.fn_arg_types
 
             if inspect.iscoroutinefunction(func.func):
 
                 async def endpoint(req: Request):
-                    obj = adapter.validate_json(await req.body())
+                    json = await req.json()
                     return responses.JSONResponse(await func.func(obj))
 
             elif inspect.isasyncgenfunction(func.func):
@@ -112,7 +116,8 @@ class Actionator:
         for func in self.registered_funcs:
             def start_form(req: Request):
                 return templates.TemplateResponse(req, 'start_form.html', {
-                    'inputs': [{'type': 'text', 'name': name} for name in func.fn_arg_types]
+                    'inputs': [{'type': 'text', 'name': name} for name in func.fn_arg_types],
+                    'func': func,
                 })
             
             routes.append(Route(func.html_start_form_path, endpoint=start_form, methods=['GET']))

@@ -22,14 +22,19 @@ layout.registerComponent('action-bar', function(container, state) {
 });
 
 layout.registerComponent('start-form', function(container, state) {
-    fetch(state.action_form_path).then(x => x.text()).then(x => container.getElement().html(x));
+    fetch(state.action_form_path).then(x => x.text()).then(x => {
+        let elem = container.getElement();
+        elem.html(x);
+
+
+    });
 })
 
 layout.init();
 
-function start_action(name, action_form_path) {
+function prepare_action(name, action_form_path) {
     layout.root.contentItems[0].contentItems[1].addChild({
-        title: `Start ${name.title}`,
+        title: `Start ${name}`,
         type: 'component',
         componentName: 'start-form',
         componentState: { action_form_path }
