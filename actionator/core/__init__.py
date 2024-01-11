@@ -1,18 +1,89 @@
+from starlette.responses import JSONResponse
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.templating import Jinja2Templates
-from starlette.routing import Route
-from starlette import responses
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket
+from starlette.endpoints import WebSocketEndpoint
 from pathlib import Path
 from typing import Iterable
+from io import TextIOBase
+from threading import Thread
+from queue import Queue
 import typing
 import inspect
+import pydantic
+import asyncio
+
+class Message(pydantic.BaseModel):
+    for_func: str
+    msg_type: typing.Literal["line"]
+    stream: typing.Literal["stdout", "stderr", "status"]
+
+    msg: str
+
+
+class WSIOWrapper(TextIOBase):
+    """
+    A small wrapper around a WebSocket to make
+    it usable as an IO-like object. TextIOBase takes care of 
+    most of the hard work for us, and implements most relevant methods
+    with sane defaults.
+
+    This wrapper will send any data written over 
+    """
+
+    def __init__(self, msg_queue: Queue, for_func: str, stream: typing.Literal["stdout", "stderr"]="stdout"):
+        self.msg_queue = msg_queue
+        self.for_func = for_func
+        self.stream = stream
+
+    def writable(self):
+        return True
+
+    def write(self, data: str):
+        for line in data.splitlines():
+            data = Message(for_func=self.for_func, msg_type="line", stream=self.stream, msg=line)
+            self.msg_queue.put(data)
+                
+    def update_status(self, msg: str):
+        self.msg_queue.put(Message(for_func=self.for_func, msg_type='line', stream='status', msg=msg))
+            
+class MultiWSWriter(TextIOBase):
+    def __init__(self, websockets: Iterable[WebSocket], max_queue_size=100_000):
+        self.websockets = websockets
+        self.msg_queue = Queue(max_queue_size)
+        self.ws_io_thread = None
+
+    def append_ws(self, ws: WebSocket):
+        self.websockets.append(ws)
+
+    def remove_ws(self, ws: WebSocket):
+        self.websockets.remove(ws)
+
+    def output_io_for(self, for_func: str, stream: typing.Literal["stdout", "stderr"]="stdout") -> WSIOWrapper:
+        return WSIOWrapper(self.msg_queue, for_func, stream=stream)
+
+    def start_ws_io_loop(self):
+        if self.ws_io_thread is None:
+            self.ws_io_thread = Thread(target=self._ws_io_thread_loop, daemon=True)
+
+    def _ws_io_thread_loop(self):
+        async def _inner():
+            while True:
+                msg: Message = self.msg_queue.get()
+                for ws in self.websockets:
+                    await ws.send_text(msg.model_dump_json())
+
+        asyncio.run(_inner)
+
 
 class RegisteredFunc:
     
-    def __init__(self, func: typing.Callable, actionator) -> None:
+    def __init__(self, func: typing.Callable, actionator, gen_output_io=False) -> None:
         self.func = func
         self._actionator = actionator
+        self.gen_output_io = gen_output_io
 
     @property
     def api_path(self):
@@ -31,29 +102,54 @@ class RegisteredFunc:
         arg_types = typing.get_type_hints(self.func)
         if "return" in arg_types:
             del arg_types['return']
+        if self.gen_output_io and 'output_io' in arg_types:
+            del arg_types['output_io']
 
         return arg_types
     
+    @property
+    def fn_pydantic_model(self):
+        if hasattr(self, '_pydantic_model'):
+            return self._pydantic_model
+        
+        self._pydantic_model = type(f'{self.name}_Model', (pydantic.BaseModel,), {"__annotations__": self.fn_arg_types})
+        return self._pydantic_model
     
-def call_registered_func(func: RegisteredFunc, request: Request):
-    sig = inspect.signature(func)
+
+
+async def call_registered_func(func: RegisteredFunc, request: Request, output_io: WSIOWrapper):
+    sig = inspect.signature(func.func)
+    sig = sig.replace(parameters=(param for param in sig.parameters.values() if param.name != "output_io"))
     if len(sig.parameters) != len(func.fn_arg_types):
         raise NotImplementedError("Untyped function parameters are not currently supported ...")
-
-    if len(func.fn_arg_types) == 0:
-        return {}
-    if len(func.fn_arg_types) == 1:
-        key, value = next(func.fn_arg_types.items())
-        func(key=value)
         
+    model = func.fn_pydantic_model.model_validate_json(await request.body())
+    params = model.model_dump()
 
+    if func.gen_output_io:
+        params["output_io"] = output_io
+
+    if inspect.iscoroutinefunction(func.func):
+        await func.func(**params)
+
+    elif inspect.isasyncgenfunction(func.func):
+        async for status in func.func(**params):
+            output_io.update_status(status.encode("utf-8"))
+
+    elif inspect.isgeneratorfunction(func.func):
+        for status in func.func(**params):
+            output_io.update_status(status.encode("utf-8"))
+
+    else:
+        func.func(**params)
 
 class Actionator:
     def __init__(self, api_prefix="/api/v1"):
         self.registered_funcs: list[RegisteredFunc] = []
         self.api_prefix = api_prefix
+        self.wss_writer = MultiWSWriter([])
 
-    def fn(self, func):
+    def fn(self, gen_output_io=False):
         """
         A decorator to register a function. This does a couple of things.
         Firstly, it makes the function accessible through RPC when API is generated.
@@ -61,46 +157,28 @@ class Actionator:
         an item.
 
         Args:
-            func: The function that is being registered
+            gen_output_io: bool - If True, a parameter called output_io will be passed, as a keyword
+                argument to the annotated function. This is a subclass of TextIOBase, and most things requiring
+                a file-like object will accept this as input. Anything written to this object will be sent 
+                to the user over WebSockets.
         """
-        self.registered_funcs.append(RegisteredFunc(func, self))
-        return func
+        
+        def wrapper(func):
+            self.registered_funcs.append(RegisteredFunc(func, self, gen_output_io=gen_output_io))
+            return func
+
+        return wrapper
 
     def _js_create_api_endpoints(self) -> Iterable[Route]:
         routes = []
+
+
         for func in self.registered_funcs:
-            
-            args_types = func.fn_arg_types
+            output_io = self.wss_writer.output_io_for(func.name)
 
-            if inspect.iscoroutinefunction(func.func):
-
-                async def endpoint(req: Request):
-                    json = await req.json()
-                    return responses.JSONResponse(await func.func(obj))
-
-            elif inspect.isasyncgenfunction(func.func):
-
-                async def endpoint(req: Request):
-                    obj = adapter.validate_json(await req.body())
-                    async for x in func.func(obj):
-                        print(f"MSG: {x}")
-
-                    return responses.PlainTextResponse("200")
-
-            elif inspect.isgeneratorfunction(func.func):
-
-                async def endpoint(req: Request):
-                    obj = adapter.validate_json(await req.body())
-                    for x in func.func(obj):
-                        print(f"MSG: {x}")
-
-                    return responses.PlainTextResponse("200")
-
-            else:
-
-                async def endpoint(req: Request):
-                    obj = adapter.validate_json(await req.body())
-                    return responses.JSONResponse(func.gunc(obj))
+            async def endpoint(req: Request):
+                await call_registered_func(func, req, output_io)
+                return JSONResponse({})
 
             # TODO: Add function name as an overridable
             # parameter when registering function
@@ -123,8 +201,6 @@ class Actionator:
             routes.append(Route(func.html_start_form_path, endpoint=start_form, methods=['GET']))
             
         return routes
-                
-            
 
 
     def generate_js(
@@ -139,7 +215,20 @@ class Actionator:
                 'funcs': self.registered_funcs
             })
 
-        routes = self._js_create_api_endpoints() + self._js_create_html_part_routes(templates) + [Route('/parts/action_bar', endpoint=action_bar_template, methods=["GET"])]
+
+        actionator = self
+        class WSEndpoint(WebSocketEndpoint):
+            encoding = "json"
+
+            async def on_connect(self, websocket: WebSocket) -> None:
+                await websocket.accept()
+                actionator.wss_writer.append_ws(websocket)
+                
+            async def on_disconnect(self, websocket: WebSocket, close_code: int) -> None:
+                actionator.wss_writer.remove_ws(websocket)
+
+        routes = self._js_create_api_endpoints() + self._js_create_html_part_routes(templates) + [Route('/parts/action_bar', endpoint=action_bar_template, methods=["GET"]), WebSocketRoute('/ws', endpoint=WSEndpoint)]
+        print(routes)
         api = Starlette(routes=routes)
         
         

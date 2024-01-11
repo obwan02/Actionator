@@ -3,15 +3,16 @@ from dotenv import load_dotenv
 from starlette.staticfiles import StaticFiles
 
 from actionator.core import Actionator
+from io import TextIOBase
 
 import os
 
 server = Actionator()
 
 
-@server.fn
-def echo(msg: str) -> str:
-    return msg
+@server.fn(gen_output_io=True)
+def echo(msg: str, output_io: TextIOBase):
+    print(msg, file=output_io)
 
 
 api = server.generate_js(Path("templates"))

@@ -40,3 +40,13 @@ function prepare_action(name, action_form_path) {
         componentState: { action_form_path }
     });
 }
+
+function start_action(form_id, action_form_path) {
+    let form_data = new FormData(document.forms[form_id])
+    let data = {};
+    for(const [name, val] of form_data.entries()) {
+        data[name] = val;
+    }
+    
+    fetch(action_form_path, { body: JSON.stringify(data), method: "POST"}).then(x => console.debug("Data", x))
+}
