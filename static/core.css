@@ -12,3 +12,19 @@ body {
 .b--rlred {
     border-color:  rgb(225, 39, 38);
 }
+
+.console-out {
+    color: whitesmoke;
+    background-color: black;
+    width: 100%;
+    height: 20rem;
+    overflow-y: scroll;
+    padding: 0.5rem;
+    
+    caret-color: transparent;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+.console-out > p {
+    margin: 0.2rem 0rem;
+}

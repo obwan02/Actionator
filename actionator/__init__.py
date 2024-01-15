@@ -1,6 +1,7 @@
 from pathlib import Path
 from dotenv import load_dotenv
 from starlette.staticfiles import StaticFiles
+from asyncio import sleep
 
 from actionator.core import Actionator
 from io import TextIOBase
@@ -11,8 +12,10 @@ server = Actionator()
 
 
 @server.fn(gen_output_io=True)
-def echo(msg: str, output_io: TextIOBase):
-    print(msg, file=output_io)
+async def echo(msg: str, output_io: TextIOBase):
+    while True:
+        print(msg, file=output_io)
+        await sleep(2)
 
 
 api = server.generate_js(Path("templates"))
@@ -27,3 +30,6 @@ def main():
         port=8888,
         reload=bool(os.environ.get("ACTIONATOR_DEV")),
     )
+    
+if __name__ == "__main__":
+    main()

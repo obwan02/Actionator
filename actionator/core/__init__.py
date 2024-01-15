@@ -37,14 +37,25 @@ class WSIOWrapper(TextIOBase):
         self.msg_queue = msg_queue
         self.for_func = for_func
         self.stream = stream
+        
+        self._line_buffer = []
 
     def writable(self):
         return True
 
     def write(self, data: str):
-        for line in data.splitlines():
-            data = Message(for_func=self.for_func, msg_type="line", stream=self.stream, msg=line)
-            self.msg_queue.put(data)
+
+        for line in data.splitlines(keepends=True):
+            if line.endswith("\n"):
+                self._line_buffer.append(line.rstrip("\r\n"))
+                total_msg = "".join(self._line_buffer)
+                self._line_buffer.clear()
+
+                msg = Message(for_func=self.for_func, msg_type="line", stream=self.stream, msg=total_msg)
+                self.msg_queue.put(msg)
+            else:
+                self._line_buffer.append(line)
+
                 
     def update_status(self, msg: str):
         self.msg_queue.put(Message(for_func=self.for_func, msg_type='line', stream='status', msg=msg))
@@ -67,6 +78,7 @@ class MultiWSWriter(TextIOBase):
     def start_ws_io_loop(self):
         if self.ws_io_thread is None:
             self.ws_io_thread = Thread(target=self._ws_io_thread_loop, daemon=True)
+            self.ws_io_thread.start()
 
     def _ws_io_thread_loop(self):
         async def _inner():
@@ -75,7 +87,7 @@ class MultiWSWriter(TextIOBase):
                 for ws in self.websockets:
                     await ws.send_text(msg.model_dump_json())
 
-        asyncio.run(_inner)
+        asyncio.run(_inner())
 
 
 class RegisteredFunc:
@@ -230,7 +242,8 @@ class Actionator:
         routes = self._js_create_api_endpoints() + self._js_create_html_part_routes(templates) + [Route('/parts/action_bar', endpoint=action_bar_template, methods=["GET"]), WebSocketRoute('/ws', endpoint=WSEndpoint)]
         print(routes)
         api = Starlette(routes=routes)
-        
+
+        self.wss_writer.start_ws_io_loop()
         
         # for func in self.registered_funcs:
         #     with open(gen_dir / f"{func.__name__}.html", "w") as f:
