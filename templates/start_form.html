@@ -1,0 +1,22 @@
+<div class="pa3">
+    <h3 class="f3 ma0 mb4 pb2 bb">{{func.name | e | title}}</h3>
+    {% set form_id = range(0, 10000000000) | random %}
+    <form id="form-{{form_id}}">
+        {% for input in inputs %}
+        
+        {% set input_id = range(0, 10000000000) | random %}
+
+        <div class="measure">
+            <label for="form-{{input.name}}-{{input_id}}" class="code f6 b mb2 mr2">{{input.name | title}}</label>
+            <input class="br2 ba b--gray-20 mb2" type="{{input.type}}" name="{{input.name}}" id="form-{{input.name}}-{{input_id}}"/>
+        </div>
+        
+        {% if not input.inline %}
+        <br/>
+        {% endif %}
+
+        {% endfor %}
+        
+        <input  type="button" value="Submit" onclick="start_action('{{func.name | e}}', 'form-{{form_id}}', '{{func.api_path | e}}')"/>
+    </form>
+</div>

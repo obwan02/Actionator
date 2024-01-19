@@ -1,0 +1,10 @@
+<!-- input for action_bar.html is a single item called 'funcs', where each action is an actionator.core.RegisteredFunc object -->
+<ul class="list pl0 mv1">
+
+    {% for func in funcs %}
+
+    <li class="pa2 ba b--dark-red br2 mv1 mh1 bg-dark-gray dim near-white" onclick="prepare_action('{{func.name | e | title}}', '{{func.html_start_form_path}}')">{{func.name | title}}</li>
+
+    {% endfor %}
+
+</ul>
